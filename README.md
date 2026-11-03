@@ -549,9 +549,17 @@ watchdog. The `browser` transport does not re-implement the seal — it uses the
 page that already has it.
 
 Requirements: Chrome running with `--remote-debugging-port` (auto-detected from
-`DevToolsActivePort`, or set `GEMINI_CDP_URL`) and a signed-in Gemini tab. The
-transport reuses the open tab, picks the mode from the picker, attaches files
-through the composer input, submits, and reads the answer from the DOM.
+`DevToolsActivePort`, or set `GEMINI_CDP_URL`) and a signed-in Gemini tab. No
+tab has to be open in advance — the transport reuses one or creates it, and
+Chrome never asks for permission. Launching Chrome by hand means including the
+flag:
+
+```bash
+chrome.exe --remote-debugging-port=9222
+```
+
+The transport reuses the open tab, picks the mode from the picker, attaches
+files through the composer input, submits, and reads the answer from the DOM.
 
 ```bash
 GEMINI_TRANSPORT=browser

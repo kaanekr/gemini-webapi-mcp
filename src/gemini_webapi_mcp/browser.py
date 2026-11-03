@@ -73,10 +73,23 @@ def _devtools_url() -> str:
 class _Cdp:
     """Minimal flattened-session CDP client."""
 
-    def __init__(self, url: str, connect_timeout: float = 60.0):
+    def __init__(self, url: str, connect_timeout: float = 60.0, attempts: int = 3):
         from websocket import create_connection
 
-        self._ws = create_connection(url, timeout=connect_timeout, suppress_origin=True)
+        last: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                self._ws = create_connection(url, timeout=connect_timeout, suppress_origin=True)
+                break
+            except Exception as exc:  # Chrome's DevTools socket is periodically slow
+                last = exc
+                if attempt + 1 < attempts:
+                    time.sleep(2 + attempt * 2)
+        else:
+            raise BrowserTransportError(
+                f"cannot reach the Chrome DevTools endpoint ({type(last).__name__}: {last}). "
+                "Is Chrome still running with --remote-debugging-port?"
+            )
         self._id = 0
 
     def cmd(self, method: str, params: dict | None = None, session: str | None = None) -> dict:
@@ -281,9 +294,9 @@ def probe() -> dict:
     except BrowserTransportError as exc:
         return {"available": False, "reason": str(exc)}
     try:
-        cdp = _Cdp(url, connect_timeout=5)
+        cdp = _Cdp(url, connect_timeout=8, attempts=2)
     except Exception as exc:
-        return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
+        return {"available": False, "reason": str(exc)}
     try:
         version = cdp.cmd("Browser.getVersion", {})
         return {"available": True, "browser": version.get("product", "?")}
