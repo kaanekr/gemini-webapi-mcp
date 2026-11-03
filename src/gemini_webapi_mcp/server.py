@@ -750,19 +750,20 @@ async def gemini_start_chat(
         session_id = str(uuid.uuid4())[:8]
 
         if _transport() == "browser":
+            tab = await browser_transport.open_tab(resolved.alias)
             _get_sessions(ctx)[session_id] = {
                 "transport": "browser",
-                "cid": None,
+                "tab": tab,
                 "model": resolved.alias,
             }
             return json.dumps({
                 "session_id": session_id,
                 "model": resolved.alias,
                 "transport": "browser",
-                "conversation_id": None,
+                "tab": tab,
                 "message": (
-                    f"Chat session '{session_id}' started in the browser transport. "
-                    "The conversation id is filled in after the first message."
+                    f"Chat session '{session_id}' started in its own browser tab "
+                    "(fresh context). Follow-ups keep that tab's conversation."
                 ),
             })
 
@@ -818,13 +819,7 @@ async def gemini_chat(
             if not chat:
                 return f"Error: Session '{session_id}' not found. Start a new one with gemini_start_chat."
             if isinstance(chat, dict) and chat.get("transport") == "browser":
-                text, cid = await browser_transport.ask_chat(
-                    prompt,
-                    cid=chat.get("cid"),
-                    model_alias=chat.get("model"),
-                    new_chat=not chat.get("cid"),
-                )
-                chat["cid"] = cid
+                text, _cid = await browser_transport.ask_in_tab(chat["tab"], prompt)
                 return text
             response = await chat.send_message(prompt)
         elif _transport() == "browser":

@@ -301,6 +301,31 @@ def _wait_answer(
 
 
 _STATE: dict = {"cdp": None, "session": None, "target": None}
+_TABS: dict[str, dict] = {}
+
+
+def _attach(cdp: _Cdp, target: str) -> str:
+    """Attach a flattened session to a target and make it behave like a live tab."""
+    session = cdp.cmd("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
+    cdp.cmd("Runtime.enable", {}, session)
+    for method, params in (
+        ("Page.enable", {}),
+        ("Page.setWebLifecycleState", {"state": "active"}),
+        ("Emulation.setFocusEmulationEnabled", {"enabled": True}),
+    ):
+        try:
+            cdp.cmd(method, params, session)
+        except Exception as exc:
+            logger.debug("browser transport: %s unavailable (%s)", method, exc)
+    return session
+
+
+def _wait_composer(cdp: _Cdp, session: str, attempts: int = 40) -> bool:
+    for _ in range(attempts):
+        if cdp.js(session, f"!!document.querySelector({json.dumps(COMPOSER_SELECTOR)})"):
+            return True
+        time.sleep(0.5)
+    return False
 
 
 def _reset_state() -> None:
@@ -331,23 +356,75 @@ def _session():
     cdp = _Cdp(_devtools_url(), connect_timeout=20, attempts=2)
     try:
         target = _open_tab(cdp)
-        session = cdp.cmd("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
-        cdp.cmd("Runtime.enable", {}, session)
-        for method, params in (
-            ("Page.enable", {}),
-            ("Page.setWebLifecycleState", {"state": "active"}),
-            ("Emulation.setFocusEmulationEnabled", {"enabled": True}),
-        ):
-            try:
-                cdp.cmd(method, params, session)
-            except Exception as exc:
-                logger.debug("browser transport: %s unavailable (%s)", method, exc)
+        session = _attach(cdp, target)
     except Exception:
         cdp.close()
         raise
 
     _STATE.update({"cdp": cdp, "session": session, "target": target})
     return cdp, session, target
+
+
+def open_conversation_tab(model_label: str | None = None) -> str:
+    """Open a brand-new chat in its own tab and return the tab key.
+
+    Navigating the shared tab to /app is not enough: Gemini restores the last
+    conversation (verified - a "new" session still answered with the previous
+    chat's fact). A fresh tab starts with an empty conversation.
+    """
+    cdp, _, _ = _session()
+    target = cdp.cmd("Target.createTarget", {"url": f"{GEMINI_URL_PREFIX}/app"})["targetId"]
+    session = _attach(cdp, target)
+    if not _wait_composer(cdp, session):
+        raise BrowserTransportError("new chat tab did not finish loading")
+    _TABS[target] = {"session": session}
+    if model_label:
+        logger.info("browser transport: %s", _select_mode(cdp, session, model_label))
+    return target
+
+
+def close_conversation_tab(key: str) -> None:
+    cdp = _STATE.get("cdp")
+    if cdp is not None:
+        try:
+            cdp.cmd("Target.closeTarget", {"targetId": key})
+        except Exception:
+            pass
+    _TABS.pop(key, None)
+
+
+def ask_in_tab_sync(
+    key: str,
+    prompt: str,
+    files: list[str] | None = None,
+    timeout: float = 300.0,
+) -> tuple[str, str | None]:
+    """Send a prompt into an existing conversation tab."""
+    try:
+        cdp, _, _ = _session()
+        entry = _TABS.get(key)
+        if not entry:
+            raise BrowserTransportError(
+                "this chat session's tab is gone (closed, or the MCP server restarted) — "
+                "start a new session with gemini_start_chat"
+            )
+        session = entry["session"]
+        if files:
+            logger.info("browser transport: %s", _attach_files(cdp, session, files))
+
+        def wake() -> None:
+            cdp.cmd("Target.activateTarget", {"targetId": key})
+            cdp.cmd("Page.bringToFront", {}, session)
+
+        if (os.environ.get("GEMINI_BROWSER_FOCUS", "0") or "0").strip().lower() in ("1", "true", "yes"):
+            wake()
+
+        before = _send_prompt(cdp, session, prompt)
+        text = _wait_answer(cdp, session, before, timeout, wake=wake)
+        return text, _current_cid(cdp, session)
+    except Exception:
+        _reset_state()
+        raise
 
 
 def _current_cid(cdp: _Cdp, session: str) -> str | None:
@@ -447,6 +524,23 @@ async def ask_chat(
     limit = float(os.environ.get("GEMINI_GEN_TIMEOUT", "600")) if timeout is None else timeout
     label = MODE_LABELS.get((model_alias or "").strip().lower())
     return await asyncio.to_thread(ask_chat_sync, prompt, cid, files, label, limit, new_chat)
+
+
+async def open_tab(model_alias: str | None = None) -> str:
+    """Async wrapper for open_conversation_tab."""
+    label = MODE_LABELS.get((model_alias or "").strip().lower())
+    return await asyncio.to_thread(open_conversation_tab, label)
+
+
+async def ask_in_tab(
+    key: str,
+    prompt: str,
+    files: list[str] | None = None,
+    timeout: float | None = None,
+) -> tuple[str, str | None]:
+    """Async wrapper for ask_in_tab_sync."""
+    limit = float(os.environ.get("GEMINI_GEN_TIMEOUT", "600")) if timeout is None else timeout
+    return await asyncio.to_thread(ask_in_tab_sync, key, prompt, files, limit)
 
 
 def probe() -> dict:
