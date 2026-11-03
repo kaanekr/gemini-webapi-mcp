@@ -28,7 +28,10 @@
 >    paths do not need admin rights or a Chrome restart.
 > 2. **Model registry instead of a hard-coded enum** — `GEMINI_MODEL_ALIASES`,
 >    `GEMINI_CHAT_MODEL`, `GEMINI_IMAGE_MODEL`, and any 16-hex backend id
->    accepted directly, so a Google model-id rotation needs no code change.
+>    accepted directly, so a Google model-id rotation needs no code change. The
+>    four modes the web UI currently offers (`3.5 Flash-Lite`, `3.8 Flash`,
+>    `3.1 Pro`, `4 Argon`) are registered with ids recovered from the browser's
+>    own request payload.
 > 3. **`gemini_models` tool** — prints alias → id, active defaults and the cookie
 >    source that authenticated the session.
 >
@@ -538,15 +541,32 @@ Aliases are resolved by `models.py`, not by the library's closed enum:
 
 | Alias | Backend id | Default for | Notes |
 |-------|-----------|-------------|-------|
-| `gemini-3.0-flash` | `fbb127bbb056c959` | chat, file/URL analysis | fast |
+| `gemini-3.0-flash` | `fbb127bbb056c959` | chat, file/URL analysis | library pin, fast |
 | `gemini-3.0-flash-thinking` | `5bf011840784117a` | image generation | Nano Banana 2, aspect ratios |
-| `gemini-3.0-pro` | `9d8ca3786ebdfbea` | — | heavier reasoning |
+| `gemini-3.0-pro` | `9d8ca3786ebdfbea` | — | library pin, heavier reasoning |
+| `gemini-3.5-flash-lite` | `8c46e95b1a07cecc` | — | web mode "3.5 Flash-Lite" |
+| `gemini-3.8-flash` | `56fdd199312815e2` | — | web mode "3.8 Flash" (UI default) |
+| `gemini-3.1-pro` | `e6fa609c3fa255c0` | — | web mode "3.1 Pro" |
+| `gemini-4-argon` | `95a4c0abcba24364` | — | web mode "4 Argon" |
+
+The four `3.5`/`3.8`/`3.1`/`4` ids were captured on 2026-11-03 from the model id
+the browser itself sends inside the `processSession` protobuf (field `1.1.2`)
+for each entry of the mode picker, build `boq_gemini-web-uiserver_20261102.15_p1`.
+The capture cross-checks itself: "3.8 Flash" resolves to `56fdd199312815e2`,
+the id this project already used for the fast browser image route.
+
+To make the current UI default the chat default:
+
+```bash
+GEMINI_CHAT_MODEL=gemini-3.8-flash
+```
 
 Two things worth knowing:
 
-- **Ids are data.** Google rotates the id inside the `x-goog-ext-525001261-jspb`
-  header, and the Gemini web UI names (`3.8 Flash`, `3.1 Pro`, `4 Argon`, …) are
-  not published anywhere as ids. So a new id never needs a code change:
+- **Ids are data.** Google rotates the id it sends for each model and does not
+  document it — the four web modes above were recovered from the browser's own
+  request payload, not from any published list. So a new id never needs a code
+  change:
 
   ```bash
   GEMINI_MODEL_ALIASES='{"g4-argon": "0123456789abcdef"}'   # register an alias

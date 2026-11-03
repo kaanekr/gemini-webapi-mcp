@@ -5,7 +5,8 @@
 Every `model` parameter accepts:
 
 - a built-in alias — `gemini-3.0-flash` (chat default), `gemini-3.0-pro`,
-  `gemini-3.0-flash-thinking` (image default);
+  `gemini-3.0-flash-thinking` (image default), plus the current web modes
+  `gemini-3.5-flash-lite`, `gemini-3.8-flash`, `gemini-3.1-pro`, `gemini-4-argon`;
 - an alias registered through `GEMINI_MODEL_ALIASES`
   (`'{"g4-argon": "0123456789abcdef"}'`);
 - a raw 16-hex backend model id.

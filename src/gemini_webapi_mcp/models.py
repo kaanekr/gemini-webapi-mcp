@@ -63,6 +63,38 @@ BUILTIN_ALIASES: dict[str, dict] = {
         "label": "Gemini 3.0 Flash Thinking",
         "note": "image generation default (header is remapped to GEMINI_IMAGE_MODEL_ID)",
     },
+    # --- Current web-UI modes ------------------------------------------------
+    # Captured 2026-11-03 from the model id the browser itself sends in the
+    # processSession protobuf (field 1.1.2) for each entry of the mode picker,
+    # build boq_gemini-web-uiserver_20261102.15_p1. The capture is self-checking:
+    # the "3.8 Flash" entry resolves to 56fdd199312815e2, the id this project
+    # already uses as the fast browser image route, and the other three come
+    # from the same field. Re-capture if Google rotates ids again; env aliases
+    # (GEMINI_MODEL_ALIASES) override any of these without a code change.
+    "gemini-3.5-flash-lite": {
+        "id": "8c46e95b1a07cecc",
+        "caps": [4],
+        "label": "Gemini 3.5 Flash-Lite",
+        "note": "web mode '3.5 Flash-Lite' — fastest answers",
+    },
+    "gemini-3.8-flash": {
+        "id": "56fdd199312815e2",
+        "caps": [4],
+        "label": "Gemini 3.8 Flash",
+        "note": "web mode '3.8 Flash' — current default mode in the UI",
+    },
+    "gemini-3.1-pro": {
+        "id": "e6fa609c3fa255c0",
+        "caps": [4],
+        "label": "Gemini 3.1 Pro",
+        "note": "web mode '3.1 Pro' — advanced reasoning",
+    },
+    "gemini-4-argon": {
+        "id": "95a4c0abcba24364",
+        "caps": [4],
+        "label": "Gemini 4 Argon",
+        "note": "web mode '4 Argon' — complex tasks",
+    },
 }
 
 SOURCE_BUILTIN = "builtin"

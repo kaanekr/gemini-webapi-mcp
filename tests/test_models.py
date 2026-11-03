@@ -105,3 +105,22 @@ def test_catalogue_reports_provenance(monkeypatch):
     assert entries["gemini-3.0-flash"]["source"] == M.SOURCE_BUILTIN
     assert entries["mine"]["source"] == M.SOURCE_ENV
     assert entries["mine"]["model_id"] == "eeeeeeeeeeeeeeee"
+
+
+def test_current_web_mode_aliases_are_registered():
+    """Ids captured 2026-11-03 from the browser's processSession payload (1.1.2).
+
+    The capture is self-checking: "3.8 Flash" has to resolve to the id this
+    project already uses for the fast browser image route.
+    """
+    expected = {
+        "gemini-3.5-flash-lite": "8c46e95b1a07cecc",
+        "gemini-3.8-flash": "56fdd199312815e2",
+        "gemini-3.1-pro": "e6fa609c3fa255c0",
+        "gemini-4-argon": "95a4c0abcba24364",
+    }
+    for alias, model_id in expected.items():
+        assert M.resolve(alias).model_id == model_id
+
+    assert M.resolve("gemini-3.8-flash").model_id == "56fdd199312815e2"
+
