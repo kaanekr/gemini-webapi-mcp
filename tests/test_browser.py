@@ -56,6 +56,18 @@ def test_probe_reports_unavailable_instead_of_raising(monkeypatch, tmp_path):
     assert "reason" in result
 
 
+def test_profile_dir_from_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("GEMINI_BROWSER_PROFILE", str(tmp_path / "automation"))
+    assert B._profile_dir() == tmp_path / "automation"
+
+    monkeypatch.setenv("GEMINI_BROWSER_PROFILE", "")
+    assert B._profile_dir() is None
+
+
+def test_chrome_path_is_discoverable():
+    assert B._chrome_exe().lower().endswith(".exe")
+
+
 def test_cid_from_url():
     assert B.cid_from_url("https://gemini.google.com/app/414d988c96ebd5b7") == "414d988c96ebd5b7"
     assert B.cid_from_url("https://gemini.google.com/app/414d988c96ebd5b7?hl=en") == "414d988c96ebd5b7"

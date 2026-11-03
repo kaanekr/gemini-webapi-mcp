@@ -26,6 +26,7 @@ import logging
 import os
 import re
 import time
+import urllib.request
 from pathlib import Path
 
 logger = logging.getLogger("gemini_mcp")
@@ -50,7 +51,142 @@ class BrowserTransportError(RuntimeError):
     """Raised when the browser transport cannot complete the request."""
 
 
+def _profile_dir() -> Path | None:
+    """Dedicated automation profile, used instead of the user's Chrome when set."""
+    raw = (os.environ.get("GEMINI_BROWSER_PROFILE") or "").strip()
+    if not raw:
+        return None
+    return Path(os.path.expandvars(os.path.expanduser(raw)))
+
+
+def _chrome_exe() -> str:
+    explicit = (os.environ.get("CHROME_PATH") or "").strip()
+    if explicit and Path(explicit).is_file():
+        return explicit
+    candidates = [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    ]
+    for path in candidates:
+        if Path(path).is_file():
+            return path
+    import shutil
+
+    for name in ("chrome", "google-chrome", "chromium", "chrome.exe"):
+        found = shutil.which(name)
+        if found:
+            return found
+    raise BrowserTransportError("chrome.exe not found; set CHROME_PATH")
+
+
+def _profile_ws_url(profile: Path, port: int) -> str | None:
+    """WS endpoint of a running automation Chrome (port file, then HTTP discovery).
+
+    Chrome only writes DevToolsActivePort when it picks the port itself (0), so an
+    explicit port has to be discovered over /json/version.
+    """
+    try:
+        file_port, ws_path = (profile / "DevToolsActivePort").read_text(encoding="utf-8").split()[:2]
+        if int(file_port) == port:
+            return f"ws://127.0.0.1:{file_port}{ws_path}"
+    except (OSError, ValueError):
+        pass
+
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=2) as resp:
+            info = json.load(resp)
+    except Exception:
+        return None
+    ws_url = info.get("webSocketDebuggerUrl")
+    return ws_url if isinstance(ws_url, str) and ws_url.startswith("ws") else None
+
+
+def _ensure_profile_chrome(profile: Path) -> str:
+    """Start (or reuse) a Chrome with its own profile and debug port."""
+    port = int(os.environ.get("GEMINI_BROWSER_PORT", "9223"))
+    existing = _profile_ws_url(profile, port)
+    if existing and _ws_alive(existing):
+        return existing
+
+    profile.mkdir(parents=True, exist_ok=True)
+    args = [
+        _chrome_exe(),
+        f"--user-data-dir={profile}",
+        f"--remote-debugging-port={port}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-background-timer-throttling",
+        "--disable-renderer-backgrounding",
+        "--disable-backgrounding-occluded-windows",
+        "about:blank",
+    ]
+    logger.info("browser transport: starting automation Chrome on port %d", port)
+    import subprocess
+    import sys
+
+    creation = 0x00000008 if sys.platform == "win32" else 0  # DETACHED_PROCESS
+    subprocess.Popen(args, creationflags=creation, close_fds=True,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    for _ in range(60):
+        time.sleep(0.5)
+        ws_url = _profile_ws_url(profile, port)
+        if ws_url and _ws_alive(ws_url):
+            return ws_url
+    raise BrowserTransportError(
+        f"automation Chrome did not expose its DevTools port ({port}). "
+        "Check that no other process uses that port."
+    )
+
+
+def _ws_alive(ws_url: str) -> bool:
+    try:
+        probe = _Cdp(ws_url, connect_timeout=4, attempts=1)
+    except Exception:
+        return False
+    try:
+        probe.cmd("Browser.getVersion", {})
+        return True
+    except Exception:
+        return False
+    finally:
+        probe.close()
+
+
+def _prime_cookies(cdp: _Cdp) -> bool:
+    """Copy PSID/PSIDTS into the automation profile so it is signed in."""
+    if _STATE.get("primed"):
+        return True
+    try:
+        from . import cookies as cookie_store
+
+        psid, psidts, source = cookie_store.resolve()
+    except Exception as exc:
+        logger.warning("browser transport: no cookies to prime the profile — %s", exc)
+        return False
+
+    jar = [
+        {"name": "__Secure-1PSID", "value": psid, "domain": ".google.com",
+         "path": "/", "secure": True, "httpOnly": True, "sameSite": "None"},
+    ]
+    if psidts:
+        jar.append({"name": "__Secure-1PSIDTS", "value": psidts, "domain": ".google.com",
+                    "path": "/", "secure": True, "httpOnly": True, "sameSite": "None"})
+    try:
+        cdp.cmd("Storage.setCookies", {"cookies": jar})
+    except Exception as exc:
+        logger.warning("browser transport: cookie injection failed — %s", exc)
+        return False
+    _STATE["primed"] = True
+    logger.info("browser transport: primed automation profile from %s", source)
+    return True
+
+
 def _devtools_url() -> str:
+    profile = _profile_dir()
+    if profile is not None:
+        return _ensure_profile_chrome(profile)
+
     explicit = os.environ.get("GEMINI_CDP_URL", "").strip()
     if explicit:
         base = explicit.rstrip("/")
@@ -67,7 +203,8 @@ def _devtools_url() -> str:
         return f"ws://127.0.0.1:{port}{ws_path}"
     raise BrowserTransportError(
         "Chrome DevTools endpoint not found. Start Chrome with "
-        "--remote-debugging-port=9222 (then the port file appears) or set GEMINI_CDP_URL."
+        "--remote-debugging-port=9222 (then the port file appears), set GEMINI_CDP_URL, "
+        "or set GEMINI_BROWSER_PROFILE to let the server run its own Chrome."
     )
 
 
@@ -355,6 +492,8 @@ def _session():
 
     cdp = _Cdp(_devtools_url(), connect_timeout=20, attempts=2)
     try:
+        if _profile_dir() is not None:
+            _prime_cookies(cdp)
         target = _open_tab(cdp)
         session = _attach(cdp, target)
     except Exception:

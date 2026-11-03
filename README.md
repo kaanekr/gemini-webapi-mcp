@@ -482,7 +482,11 @@ If cookie auto-detection fails, set them manually:
 | `GEMINI_PSIDTS` | Cookie value `__Secure-1PSIDTS` | auto |
 | `GEMINI_COOKIE_FILE` | JSON cookie store path | `~/.gemini-webapi-mcp/cookies.json` |
 | `GEMINI_COOKIE_SOURCE` | Pin one source: `auto`, `env`, `store`, `browser`, `cdp` | `auto` |
-| `GEMINI_TRANSPORT` | `legacy` (gemini_webapi) or `browser` (drive a Chrome tab over CDP) | `legacy` || `GEMINI_COOKIE_STORE_WRITE` | Rewrite the cookie store after a successful read | `0` |
+| `GEMINI_TRANSPORT` | `legacy` (gemini_webapi) or `browser` (drive a Chrome tab over CDP) | `legacy` |
+| `GEMINI_BROWSER_PROFILE` | Let the server run its **own** Chrome with this profile (no consent prompt, no touching your browser) | — |
+| `GEMINI_BROWSER_PORT` | Debug port for that automation Chrome | `9223` |
+| `GEMINI_BROWSER_FOCUS` | `1` = bring the tab to front before sending | `0` |
+| `CHROME_PATH` | Explicit path to `chrome.exe` when auto-detection fails | auto || `GEMINI_COOKIE_STORE_WRITE` | Rewrite the cookie store after a successful read | `0` |
 | `GEMINI_CDP_URL` | Chrome DevTools endpoint for cookie reading | scan `127.0.0.1:9222-9235` |
 | `GEMINI_CDP_PORTS` | Ports/ranges to scan (`9222-9235`, `9222,9333`) | `9222-9235` |
 | `CHROME_COOKIE_FILE` | Explicit path to a copied Chrome `Cookies` DB | — |
@@ -579,6 +583,12 @@ brings it to the front before every send instead.
 > appears once per Chrome session — answer *Allow* — not once per tool call.
 > To never see it, give automation its own profile and sign in there once:
 > `chrome.exe --user-data-dir=C:\chrome-gemini --remote-debugging-port=9222`.
+
+Set `GEMINI_BROWSER_PROFILE` and the server does that for you: it launches its
+own Chrome with that profile (port `GEMINI_BROWSER_PORT`, default 9223), copies
+`__Secure-1PSID`/`__Secure-1PSIDTS` into it, and drives it — no prompt, and none
+of your own tabs are touched. If Google still shows a signed-out page, sign in
+once in that window; the profile keeps the session.
 
 For unattended use, launching Chrome with background throttling disabled removes
 the guesswork:
