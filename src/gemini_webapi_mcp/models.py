@@ -18,6 +18,13 @@ module treats the mapping as *data* instead of code:
 
 Nothing here invents an id. An unknown alias raises a list of what *is* known,
 so a wrong guess fails loudly instead of silently serving another model.
+
+Caveat that belongs next to the ids: the transport the library uses
+(`StreamGenerate` + the `x-goog-ext-525001261-jspb` header) does not validate
+them. A bogus id was answered normally (see README, "Caveat: the legacy endpoint
+does not validate model ids"), and the Gemini web app itself stopped sending
+that header in favour of `processSession`. So an alias says "this is what the
+browser asks for", not "the server will serve exactly this".
 """
 
 from __future__ import annotations

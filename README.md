@@ -583,6 +583,25 @@ Two things worth knowing:
   (`56fdd199312815e2`, the fast browser route) regardless of the alias you pass.
   Set `GEMINI_NO_REMAP=1` to send your model as-is.
 
+### Caveat: the legacy endpoint does not validate model ids
+
+The alias is sent where the library always sent it — `headers=model.model_header`
+in `gemini_webapi/client.py`, i.e. the `x-goog-ext-525001261-jspb` header on
+`StreamGenerate`. Two observations from measuring this account (2026-11-03):
+
+1. The web app itself no longer sends that header at all: generation moved to
+   `geminiweb-pa.clients6.google.com/v1/processSession`, where the id rides in a
+   protobuf field instead (that is where the four ids above were recovered from).
+2. A deliberately bogus id (`0000000000000000`) still produced a normal answer in
+   37s, so the endpoint does **not** reject unknown ids — it falls back to some
+   default. `1052 MODEL_HEADER_INVALID` is therefore not a reliable validity test.
+
+Practical consequence: passing an alias cannot *guarantee* which backend model
+answers; it is best-effort on a transport Google is phasing out. Treat the ids
+here as "what the browser asks for", not as a contract. If exact model routing
+matters for your workload, verify behaviour (latency, thinking traces) rather
+than trusting the label, and re-capture the ids when the UI's mode list changes.
+
 ## Usage Examples
 
 Once configured, Claude calls the right tools automatically. Just ask in chat:
