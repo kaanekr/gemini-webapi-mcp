@@ -24,6 +24,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 
@@ -327,7 +328,7 @@ def _session():
             logger.info("browser transport: reconnecting (%s)", type(exc).__name__)
             _reset_state()
 
-    cdp = _Cdp(_devtools_url())
+    cdp = _Cdp(_devtools_url(), connect_timeout=20, attempts=2)
     try:
         target = _open_tab(cdp)
         session = cdp.cmd("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
@@ -349,15 +350,49 @@ def _session():
     return cdp, session, target
 
 
-def ask_sync(
+def _current_cid(cdp: _Cdp, session: str) -> str | None:
+    """Conversation id from the tab URL (/app/<cid>), if it already has one."""
+    url = cdp.js(session, "location.href") or ""
+    return cid_from_url(url)
+
+
+def cid_from_url(url: str) -> str | None:
+    match = re.search(r"/app/([0-9a-f]{8,})", url or "")
+    return match.group(1) if match else None
+
+
+def _goto_conversation(cdp: _Cdp, session: str, cid: str | None) -> None:
+    """Open a specific conversation, or a fresh chat when cid is None."""
+    target_url = f"{GEMINI_URL_PREFIX}/app/{cid}" if cid else f"{GEMINI_URL_PREFIX}/app"
+    current = cdp.js(session, "location.href") or ""
+    if current.rstrip("/") == target_url.rstrip("/"):
+        return
+    cdp.cmd("Page.navigate", {"url": target_url}, session)
+    for _ in range(40):
+        if cdp.js(session, f"!!document.querySelector({json.dumps(COMPOSER_SELECTOR)})"):
+            return
+        time.sleep(0.5)
+    raise BrowserTransportError(f"conversation did not load: {target_url}")
+
+
+def ask_chat_sync(
     prompt: str,
+    cid: str | None = None,
     files: list[str] | None = None,
     mode_label: str | None = None,
     timeout: float = 300.0,
-) -> str:
-    """Send one prompt in the browser and return the answer text."""
+    new_chat: bool = False,
+) -> tuple[str, str | None]:
+    """Send a prompt into a conversation; return (answer, conversation_id).
+
+    ``cid`` targets an existing conversation, ``new_chat`` opens a fresh one.
+    With neither, the tab is left where it is.
+    """
     try:
         cdp, session, target = _session()
+        if cid or new_chat:
+            _goto_conversation(cdp, session, cid)
+
         if mode_label:
             logger.info("browser transport: %s", _select_mode(cdp, session, mode_label))
         if files:
@@ -371,12 +406,21 @@ def ask_sync(
             wake()
 
         before = _send_prompt(cdp, session, prompt)
-
-        return _wait_answer(cdp, session, before, timeout, wake=wake)
+        text = _wait_answer(cdp, session, before, timeout, wake=wake)
+        return text, _current_cid(cdp, session)
     except Exception:
-        # A broken socket must not poison the next call.
         _reset_state()
         raise
+
+
+def ask_sync(
+    prompt: str,
+    files: list[str] | None = None,
+    mode_label: str | None = None,
+    timeout: float = 300.0,
+) -> str:
+    """Send one prompt in the browser and return the answer text."""
+    return ask_chat_sync(prompt, files=files, mode_label=mode_label, timeout=timeout)[0]
 
 
 async def ask(
@@ -389,6 +433,20 @@ async def ask(
     limit = float(os.environ.get("GEMINI_GEN_TIMEOUT", "600")) if timeout is None else timeout
     label = MODE_LABELS.get((model_alias or "").strip().lower())
     return await asyncio.to_thread(ask_sync, prompt, files, label, limit)
+
+
+async def ask_chat(
+    prompt: str,
+    cid: str | None = None,
+    files: list[str] | None = None,
+    model_alias: str | None = None,
+    timeout: float | None = None,
+    new_chat: bool = False,
+) -> tuple[str, str | None]:
+    """Async multi-turn variant: returns (answer, conversation_id)."""
+    limit = float(os.environ.get("GEMINI_GEN_TIMEOUT", "600")) if timeout is None else timeout
+    label = MODE_LABELS.get((model_alias or "").strip().lower())
+    return await asyncio.to_thread(ask_chat_sync, prompt, cid, files, label, limit, new_chat)
 
 
 def probe() -> dict:

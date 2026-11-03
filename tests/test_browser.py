@@ -54,3 +54,11 @@ def test_probe_reports_unavailable_instead_of_raising(monkeypatch, tmp_path):
     result = B.probe()
     assert result["available"] is False
     assert "reason" in result
+
+
+def test_cid_from_url():
+    assert B.cid_from_url("https://gemini.google.com/app/414d988c96ebd5b7") == "414d988c96ebd5b7"
+    assert B.cid_from_url("https://gemini.google.com/app/414d988c96ebd5b7?hl=en") == "414d988c96ebd5b7"
+    assert B.cid_from_url("https://gemini.google.com/app") is None
+    assert B.cid_from_url("") is None
+    assert B.cid_from_url("https://gemini.google.com/other/abc") is None

@@ -532,7 +532,7 @@ The only calibrated invariant is the star shape in `src/gemini_webapi_mcp/assets
 | Value | Path | Covers |
 |-------|------|--------|
 | `legacy` (default) | `gemini_webapi` → `StreamGenerate` | chat, file/URL analysis, image generation |
-| `browser` | drives a real Chrome tab over CDP | chat (single turn), file analysis, URL analysis |
+| `browser` | drives a real Chrome tab over CDP | chat (single and multi-turn), file analysis, URL analysis |
 
 **Why `browser` exists.** The web app moved generation to
 `geminiweb-pa.clients6.google.com/v1/processSession`, and that transport cannot
@@ -560,6 +560,12 @@ chrome.exe --remote-debugging-port=9222
 
 The transport reuses the open tab, picks the mode from the picker, attaches
 files through the composer input, submits, and reads the answer from the DOM.
+
+Multi-turn works by conversation id: `gemini_start_chat` opens a fresh chat
+(`/app`), the id of the resulting conversation is read from the tab URL after the
+first answer and stored on the session, and every follow-up navigates to
+`/app/<cid>` before sending. So `gemini_chat(prompt, session_id=...)` keeps
+context without the legacy client.
 
 Because Chrome throttles background tabs, the transport keeps the tab "active"
 (`Page.setWebLifecycleState`) and emulates focus while reading, and brings the

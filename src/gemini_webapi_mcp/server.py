@@ -746,10 +746,28 @@ async def gemini_start_chat(
         JSON with session_id to use in subsequent gemini_chat calls.
     """
     try:
-        client = _get_client(ctx)
         resolved = _model_arg(model)
-        chat = client.start_chat(model=resolved.as_library_model())
         session_id = str(uuid.uuid4())[:8]
+
+        if _transport() == "browser":
+            _get_sessions(ctx)[session_id] = {
+                "transport": "browser",
+                "cid": None,
+                "model": resolved.alias,
+            }
+            return json.dumps({
+                "session_id": session_id,
+                "model": resolved.alias,
+                "transport": "browser",
+                "conversation_id": None,
+                "message": (
+                    f"Chat session '{session_id}' started in the browser transport. "
+                    "The conversation id is filled in after the first message."
+                ),
+            })
+
+        client = _get_client(ctx)
+        chat = client.start_chat(model=resolved.as_library_model())
         _get_sessions(ctx)[session_id] = chat
         return json.dumps({
             "session_id": session_id,
@@ -795,11 +813,19 @@ async def gemini_chat(
         resolved = _model_arg(model)
 
         if session_id:
-            client = _get_client(ctx)
             sessions = _get_sessions(ctx)
             chat = sessions.get(session_id)
             if not chat:
                 return f"Error: Session '{session_id}' not found. Start a new one with gemini_start_chat."
+            if isinstance(chat, dict) and chat.get("transport") == "browser":
+                text, cid = await browser_transport.ask_chat(
+                    prompt,
+                    cid=chat.get("cid"),
+                    model_alias=chat.get("model"),
+                    new_chat=not chat.get("cid"),
+                )
+                chat["cid"] = cid
+                return text
             response = await chat.send_message(prompt)
         elif _transport() == "browser":
             return await browser_transport.ask(prompt, model_alias=resolved.alias)
