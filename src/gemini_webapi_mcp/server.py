@@ -581,6 +581,16 @@ def _handle_error(e: Exception) -> str:
     return f"Error: {type(e).__name__} — {e}"
 
 
+def _timeout_message(kind: str) -> str:
+    """Message for a call that hit GEMINI_GEN_TIMEOUT (stalled, not failed)."""
+    return (
+        f"Error: Gemini did not answer within {GEN_TIMEOUT:.0f}s — the request stalled "
+        f"({kind}). On this account that is usually server-side throttling, not the input: "
+        "wait a few minutes and retry instead of re-sending in a loop. "
+        "GEMINI_GEN_TIMEOUT overrides the cap."
+    )
+
+
 async def _fetch_download_url(client, token: str, prompt: str, metadata: list, image_index: int = 0) -> str | None:
     """Call c8o8Fe RPC to get a high-resolution (2x) download URL for a generated image.
 
@@ -978,9 +988,16 @@ async def gemini_upload_file(
             return f"Error: File not found — {p}"
 
         client = _get_client(ctx)
-        response = await client.generate_content(
-            prompt, model=_model_arg(model).as_library_model(), files=[str(p)]
-        )
+        try:
+            response = await asyncio.wait_for(
+                client.generate_content(
+                    prompt, model=_model_arg(model).as_library_model(), files=[str(p)]
+                ),
+                timeout=GEN_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("gemini_upload_file exceeded %.0fs cap", GEN_TIMEOUT)
+            return _timeout_message("upload and analysis")
         return response.text or "(empty response)"
 
     except Exception as e:
@@ -1020,9 +1037,16 @@ async def gemini_analyze_url(
     try:
         client = _get_client(ctx)
         full_prompt = f"{prompt}\n\n{url}"
-        response = await client.generate_content(
-            full_prompt, model=_model_arg(model).as_library_model()
-        )
+        try:
+            response = await asyncio.wait_for(
+                client.generate_content(
+                    full_prompt, model=_model_arg(model).as_library_model()
+                ),
+                timeout=GEN_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("gemini_analyze_url exceeded %.0fs cap", GEN_TIMEOUT)
+            return _timeout_message("URL analysis")
         return response.text or "(empty response)"
     except Exception as e:
         return _handle_error(e)

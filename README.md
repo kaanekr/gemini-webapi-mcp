@@ -495,7 +495,7 @@ If cookie auto-detection fails, set them manually:
 | `GEMINI_NO_REMAP` | `1` = do not remap the model header during image generation | `0` |
 | `GEMINI_SKIP_2X` | `1` = keep the native (non-upscaled) image | `0` |
 | `GEMINI_WM_KEEP` | `1` = keep the Gemini watermark | `0` |
-| `GEMINI_GEN_TIMEOUT` | Hard cap for one image-generation call (seconds) | `600` |
+| `GEMINI_GEN_TIMEOUT` | Hard cap for one call — image generation, file analysis, URL analysis (seconds) | `600` |
 
 ## High Resolution (2x)
 
