@@ -482,7 +482,7 @@ If cookie auto-detection fails, set them manually:
 | `GEMINI_PSIDTS` | Cookie value `__Secure-1PSIDTS` | auto |
 | `GEMINI_COOKIE_FILE` | JSON cookie store path | `~/.gemini-webapi-mcp/cookies.json` |
 | `GEMINI_COOKIE_SOURCE` | Pin one source: `auto`, `env`, `store`, `browser`, `cdp` | `auto` |
-| `GEMINI_COOKIE_STORE_WRITE` | Rewrite the cookie store after a successful read | `0` |
+| `GEMINI_TRANSPORT` | `legacy` (gemini_webapi) or `browser` (drive a Chrome tab over CDP) | `legacy` || `GEMINI_COOKIE_STORE_WRITE` | Rewrite the cookie store after a successful read | `0` |
 | `GEMINI_CDP_URL` | Chrome DevTools endpoint for cookie reading | scan `127.0.0.1:9222-9235` |
 | `GEMINI_CDP_PORTS` | Ports/ranges to scan (`9222-9235`, `9222,9333`) | `9222-9235` |
 | `CHROME_COOKIE_FILE` | Explicit path to a copied Chrome `Cookies` DB | — |
@@ -524,6 +524,41 @@ The mark is always stamped at one of two fixed corner anchors — **96 px** or *
 The approach hard-codes no resolution-dependent values, so it works at any native resolution or aspect ratio — on light, dark, and coloured backgrounds alike.
 
 The only calibrated invariant is the star shape in `src/gemini_webapi_mcp/assets/wm_alpha_edit.npy`. Set `GEMINI_WM_KEEP=1` to disable removal (keep the raw watermark).
+
+## Transports
+
+`GEMINI_TRANSPORT` decides how a request reaches Gemini.
+
+| Value | Path | Covers |
+|-------|------|--------|
+| `legacy` (default) | `gemini_webapi` → `StreamGenerate` | chat, file/URL analysis, image generation |
+| `browser` | drives a real Chrome tab over CDP | chat (single turn), file analysis, URL analysis |
+
+**Why `browser` exists.** The web app moved generation to
+`geminiweb-pa.clients6.google.com/v1/processSession`, and that transport cannot
+be reproduced from Python: the prompt is not sent as text. It travels inside a
+sealed blob produced by the page's own JavaScript. Verified by replaying a
+captured request — the prompt marker was absent from the 1.9 KB protobuf body,
+which instead carried a model id, a uuid, the language, and an opaque sealed
+blob plus a content hash.
+
+The legacy path still answers, but it intermittently serves a text-only variant
+that replies "I only generate text" (Turkish: "…programlanmadım / yalnızca metin
+oluşturuyorum") even for a valid PDF, and it can stay silent past the stall
+watchdog. The `browser` transport does not re-implement the seal — it uses the
+page that already has it.
+
+Requirements: Chrome running with `--remote-debugging-port` (auto-detected from
+`DevToolsActivePort`, or set `GEMINI_CDP_URL`) and a signed-in Gemini tab. The
+transport reuses the open tab, picks the mode from the picker, attaches files
+through the composer input, submits, and reads the answer from the DOM.
+
+```bash
+GEMINI_TRANSPORT=browser
+```
+
+`gemini_models` reports the active transport and whether the browser endpoint is
+reachable right now.
 
 ## Tools
 
@@ -586,7 +621,6 @@ Two things worth knowing:
   Set `GEMINI_NO_REMAP=1` to send your model as-is.
 
 ### Caveat: the legacy endpoint does not validate model ids
-
 The alias is sent where the library always sent it — `headers=model.model_header`
 in `gemini_webapi/client.py`, i.e. the `x-goog-ext-525001261-jspb` header on
 `StreamGenerate`. Two observations from measuring this account (2026-11-03):
