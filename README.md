@@ -590,6 +590,20 @@ own Chrome with that profile (port `GEMINI_BROWSER_PORT`, default 9223), copies
 of your own tabs are touched. If Google still shows a signed-out page, sign in
 once in that window; the profile keeps the session.
 
+### One "AI Chrome" shared with chrome-devtools-mcp
+
+The same profile can back every CDP client, so the Gemini transport and
+`chrome-devtools-mcp` drive one browser instead of fighting over tabs:
+
+```jsonc
+// chrome-devtools-mcp
+"command": [..., "chrome-devtools-mcp.js", "--browserUrl", "http://127.0.0.1:9223"]
+```
+
+Start (or keep) that browser with `scripts/ai-chrome.cmd` — idempotent, so it is
+safe to drop a shortcut into the Windows Startup folder. The Gemini transport
+also launches it on demand if it is missing.
+
 For unattended use, launching Chrome with background throttling disabled removes
 the guesswork:
 
