@@ -1,5 +1,19 @@
 # MCP Tools Reference
 
+## Model arguments (all tools)
+
+Every `model` parameter accepts:
+
+- a built-in alias — `gemini-3.0-flash` (chat default), `gemini-3.0-pro`,
+  `gemini-3.0-flash-thinking` (image default);
+- an alias registered through `GEMINI_MODEL_ALIASES`
+  (`'{"g4-argon": "0123456789abcdef"}'`);
+- a raw 16-hex backend model id.
+
+`GEMINI_CHAT_MODEL` / `GEMINI_IMAGE_MODEL` change the defaults. Unknown aliases
+fail with the current list — the registry never guesses an id. Ask
+`gemini_models` what is registered before inventing a name.
+
 ## gemini_chat
 
 Text prompt to Gemini. Supports multi-turn and thinking mode.
@@ -147,7 +161,8 @@ gemini_reset()
 | Stream interrupted / timeout | Server auto-retries (watchdog 45s); file editing may need 2-3 retries |
 | No images in response | Prompt may violate content policy, rephrase. For file editing: update server (`git pull && uv sync`) |
 | Square image despite aspect ratio | Include "16:9" or "9:16" in prompt text |
-| Error 1052 / image generation fails | Google rotated model IDs. Update server to latest version: `git pull && uv sync` |
+| Error 1052 / image generation fails | Google rotated model IDs. Register the new id (`GEMINI_MODEL_ALIASES='{"my-alias":"<16-hex-id>"}'` or `GEMINI_IMAGE_MODEL_ID`), or update the server: `git pull && uv sync` |
+| "Gemini cookies not found" / `RequiresAdminError` while Chrome is open | Chrome locks its cookie DB. Write the JSON store (`GEMINI_COOKIE_FILE`), start Chrome with `--remote-debugging-port=9222`, or pin a source with `GEMINI_COOKIE_SOURCE` |
 
 ## Environment Variables
 
@@ -157,6 +172,14 @@ gemini_reset()
 | `GEMINI_PSIDTS` | — | Override `__Secure-1PSIDTS` cookie |
 | `GEMINI_ACCOUNT_INDEX` | `0` | Google account index (for multi-account Chrome profiles) |
 | `GEMINI_LANGUAGE` | `en` | Language for Gemini responses |
+| `GEMINI_CHAT_MODEL` | `gemini-3.0-flash` | Default chat/analysis alias or raw 16-hex id |
+| `GEMINI_IMAGE_MODEL` | `gemini-3.0-flash-thinking` | Default image-generation alias or raw id |
+| `GEMINI_MODEL_ALIASES` | — | JSON map of extra aliases → ids, e.g. `{"g4-argon": "0123456789abcdef"}` |
+| `GEMINI_COOKIE_FILE` | `~/.gemini-webapi-mcp/cookies.json` | JSON cookie store (`{"psid": "...", "psidts": "..."}`) |
+| `GEMINI_COOKIE_SOURCE` | `auto` | `auto`, `env`, `store`, `browser` or `cdp` |
+| `GEMINI_COOKIE_STORE_WRITE` | `0` | `1` = rewrite the cookie store after every successful read |
+| `GEMINI_CDP_URL` | — | Chrome DevTools endpoint (`http://127.0.0.1:9222`) for cookie reading |
+| `GEMINI_IMAGE_MODEL_ID` | `56fdd199312815e2` | Header id forced during image generation |
 
 **Cookie auth on headless/remote servers:**
 

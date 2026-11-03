@@ -4,13 +4,16 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gemini-webapi-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server for Google Gemini — free image generation and chat via browser cookies"
 readme = "README.md"
 license = "AGPL-3.0-or-later"
 requires-python = ">=3.10"
 authors = [
     { name = "AndyShaman" },
+]
+maintainers = [
+    { name = "kaanekr", email = "kaaneker78@gmail.com" },
 ]
 keywords = ["mcp", "mcp-server", "gemini", "google-gemini", "ai", "image-generation", "llm", "claude", "model-context-protocol"]
 classifiers = [
@@ -28,6 +31,7 @@ dependencies = [
     "gemini-webapi @ git+https://github.com/xob0t/Gemini-API.git",
     "mcp>=1.8,<2",
     "browser-cookie3>=0.20",
+    "websocket-client>=1.7",
     "orjson>=3.9",
     "Pillow>=10.0",
     "numpy>=1.24",
@@ -38,9 +42,10 @@ dependencies = [
 gemini-webapi-mcp = "gemini_webapi_mcp:main"
 
 [project.urls]
-Homepage = "https://github.com/AndyShaman/gemini-webapi-mcp"
-Repository = "https://github.com/AndyShaman/gemini-webapi-mcp"
-Issues = "https://github.com/AndyShaman/gemini-webapi-mcp/issues"
+Homepage = "https://github.com/kaanekr/gemini-webapi-mcp"
+Repository = "https://github.com/kaanekr/gemini-webapi-mcp"
+Upstream = "https://github.com/AndyShaman/gemini-webapi-mcp"
+Issues = "https://github.com/kaanekr/gemini-webapi-mcp/issues"
 
 [tool.hatch.metadata]
 allow-direct-references = true

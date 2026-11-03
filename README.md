@@ -18,6 +18,31 @@
   <a href="https://www.youtube.com/channel/UCLkP6wuW_P2hnagdaZMBtCw"><img src="https://img.shields.io/badge/YouTube-канал автора-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="YouTube"></a>
 </p>
 
+> **This is `kaanekr/gemini-webapi-mcp` — a fork of
+> [AndyShaman/gemini-webapi-mcp](https://github.com/AndyShaman/gemini-webapi-mcp)
+> (0.1.0 → 0.2.0).** Upstream first; the fork adds three things:
+>
+> 1. **Cookie resolution that survives a running Chrome** — env → JSON store →
+>    `browser-cookie3` → Chrome DevTools. On Windows the old path dies with
+>    `RequiresAdminError` because Chrome locks its cookie DB; the store and CDP
+>    paths do not need admin rights or a Chrome restart.
+> 2. **Model registry instead of a hard-coded enum** — `GEMINI_MODEL_ALIASES`,
+>    `GEMINI_CHAT_MODEL`, `GEMINI_IMAGE_MODEL`, and any 16-hex backend id
+>    accepted directly, so a Google model-id rotation needs no code change.
+> 3. **`gemini_models` tool** — prints alias → id, active defaults and the cookie
+>    source that authenticated the session.
+>
+> Install from the fork:
+>
+> ```bash
+> uv tool install --force "gemini-webapi-mcp @ git+https://github.com/kaanekr/gemini-webapi-mcp.git"
+> ```
+>
+> **Türkçe özet:** çerezler artık Chrome açıkken de okunabiliyor (env → JSON store
+> → browser-cookie3 → DevTools), model isimleri kod yerine `GEMINI_MODEL_ALIASES`
+> ile tanımlanıyor ve `gemini_models` hangi alias'ın hangi id'ye gittiğini
+> gösteriyor. Kurulum: `uv tool install --force "gemini-webapi-mcp @ git+https://github.com/kaanekr/gemini-webapi-mcp.git"`
+
 ---
 
 ## Возможности
@@ -403,7 +428,23 @@ Then open Claude Code or Claude Desktop and try: *"Generate a watercolor cat ima
 
 ## Authentication
 
-The server reads cookies from Chrome automatically via `browser-cookie3`.
+The server resolves cookies through four sources, in order — the first one that
+yields `__Secure-1PSID` wins:
+
+1. `GEMINI_PSID` / `GEMINI_PSIDTS` environment variables;
+2. a JSON cookie store (`GEMINI_COOKIE_FILE`, default `~/.gemini-webapi-mcp/cookies.json`);
+3. Chrome via `browser-cookie3`;
+4. Chrome DevTools Protocol (`--remote-debugging-port`, `GEMINI_CDP_URL`).
+
+> **Windows: "RequiresAdminError" / "Gemini cookies not found" while Chrome is open?** That is the old single-source path failing: Chrome keeps its cookie DB locked, so `browser-cookie3` needs admin rights to snapshot it. Sources 2 and 4 (added in this fork) keep working while Chrome runs — write the cookie store once, or start Chrome with `--remote-debugging-port=9222`. `GEMINI_COOKIE_SOURCE=env|store|browser|cdp` pins a single source.
+
+Store format (`chmod 600` is applied where the platform supports it):
+
+```json
+{"psid": "g.a000...", "psidts": "sidts-..."}
+```
+
+Set `GEMINI_COOKIE_STORE_WRITE=1` and the server rewrites that file on every successful read, so a refresh only needs `gemini_reset`.
 
 > **Multiple Google accounts?** Set `GEMINI_ACCOUNT_INDEX` — the account number from Chrome (0 = first, 1 = second, ...). Check the order by clicking your avatar on gemini.google.com.
 
@@ -420,7 +461,7 @@ If cookie auto-detection fails, set them manually:
   "mcpServers": {
     "gemini": {
       "command": "uv",
-      "args": ["run", "--with", "gemini-webapi-mcp @ git+https://github.com/AndyShaman/gemini-webapi-mcp.git", "gemini-webapi-mcp"],
+      "args": ["run", "--with", "gemini-webapi-mcp @ git+https://github.com/kaanekr/gemini-webapi-mcp.git", "gemini-webapi-mcp"],
       "env": {
         "GEMINI_PSID": "your__Secure-1PSID_value",
         "GEMINI_PSIDTS": "your__Secure-1PSIDTS_value"
@@ -434,10 +475,24 @@ If cookie auto-detection fails, set them manually:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `GEMINI_PSID` | Cookie value `__Secure-1PSID` | auto from Chrome |
-| `GEMINI_PSIDTS` | Cookie value `__Secure-1PSIDTS` | auto from Chrome |
-| `GEMINI_LANGUAGE` | Gemini response language (`ru`, `en`, `ja`, ...) | `en` |
+| `GEMINI_PSID` | Cookie value `__Secure-1PSID` | auto |
+| `GEMINI_PSIDTS` | Cookie value `__Secure-1PSIDTS` | auto |
+| `GEMINI_COOKIE_FILE` | JSON cookie store path | `~/.gemini-webapi-mcp/cookies.json` |
+| `GEMINI_COOKIE_SOURCE` | Pin one source: `auto`, `env`, `store`, `browser`, `cdp` | `auto` |
+| `GEMINI_COOKIE_STORE_WRITE` | Rewrite the cookie store after a successful read | `0` |
+| `GEMINI_CDP_URL` | Chrome DevTools endpoint for cookie reading | scan `127.0.0.1:9222-9235` |
+| `GEMINI_CDP_PORTS` | Ports/ranges to scan (`9222-9235`, `9222,9333`) | `9222-9235` |
+| `CHROME_COOKIE_FILE` | Explicit path to a copied Chrome `Cookies` DB | — |
+| `GEMINI_CHAT_MODEL` | Default chat/analysis alias or raw model id | `gemini-3.0-flash` |
+| `GEMINI_IMAGE_MODEL` | Default image-generation alias or raw model id | `gemini-3.0-flash-thinking` |
+| `GEMINI_MODEL_ALIASES` | JSON map of extra aliases → ids | — |
+| `GEMINI_IMAGE_MODEL_ID` | Header id forced for image requests | `56fdd199312815e2` |
+| `GEMINI_LANGUAGE` | Gemini response language (`ru`, `en`, `tr`, `ja`, ...) | `en` |
 | `GEMINI_ACCOUNT_INDEX` | Google account index (0, 1, 2, ...) | `0` |
+| `GEMINI_NO_REMAP` | `1` = do not remap the model header during image generation | `0` |
+| `GEMINI_SKIP_2X` | `1` = keep the native (non-upscaled) image | `0` |
+| `GEMINI_WM_KEEP` | `1` = keep the Gemini watermark | `0` |
+| `GEMINI_GEN_TIMEOUT` | Hard cap for one image-generation call (seconds) | `600` |
 
 ## High Resolution (2x)
 
@@ -475,14 +530,38 @@ The only calibrated invariant is the star shape in `src/gemini_webapi_mcp/assets
 | `gemini_chat` | Text chat (single or multi-turn) |
 | `gemini_start_chat` | Start a multi-turn session |
 | `gemini_reset` | Re-initialize client on auth errors |
+| `gemini_models` | List aliases → backend ids, active defaults, cookie source |
 
 ## Models
 
-| Model | Default for | Notes |
-|-------|-------------|-------|
-| `gemini-3.0-flash` | chat, file analysis | Fast |
-| `gemini-3.0-flash-thinking` | image generation | Nano Banana 2, supports aspect ratios |
-| `gemini-3.0-pro` | — | Alternative model |
+Aliases are resolved by `models.py`, not by the library's closed enum:
+
+| Alias | Backend id | Default for | Notes |
+|-------|-----------|-------------|-------|
+| `gemini-3.0-flash` | `fbb127bbb056c959` | chat, file/URL analysis | fast |
+| `gemini-3.0-flash-thinking` | `5bf011840784117a` | image generation | Nano Banana 2, aspect ratios |
+| `gemini-3.0-pro` | `9d8ca3786ebdfbea` | — | heavier reasoning |
+
+Two things worth knowing:
+
+- **Ids are data.** Google rotates the id inside the `x-goog-ext-525001261-jspb`
+  header, and the Gemini web UI names (`3.8 Flash`, `3.1 Pro`, `4 Argon`, …) are
+  not published anywhere as ids. So a new id never needs a code change:
+
+  ```bash
+  GEMINI_MODEL_ALIASES='{"g4-argon": "0123456789abcdef"}'   # register an alias
+  gemini_chat(prompt="hi", model="0123456789abcdef")        # or pass the id raw
+  gemini_chat(prompt="hi", model="g4-argon")
+  GEMINI_CHAT_MODEL=g4-argon                                # or make it the default
+  ```
+
+  `gemini_models` prints the live mapping and where each alias came from
+  (`builtin` / `env` / `raw-id`). Unknown aliases fail with that list — the
+  registry never guesses an id.
+
+- **Image generation remaps the header** to `GEMINI_IMAGE_MODEL_ID`
+  (`56fdd199312815e2`, the fast browser route) regardless of the alias you pass.
+  Set `GEMINI_NO_REMAP=1` to send your model as-is.
 
 ## Usage Examples
 

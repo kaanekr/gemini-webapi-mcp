@@ -4,6 +4,15 @@ MCP Server for Google Gemini via browser cookies.
 Uses gemini_webapi library to access Gemini Web App for free,
 without requiring paid API keys. Authentication is done through
 browser cookies (__Secure-1PSID and __Secure-1PSIDTS).
+
+Fork additions (kaanekr/gemini-webapi-mcp):
+  * cookie resolution falls back to a JSON store and the Chrome DevTools
+    protocol, so a running Chrome (locked cookie DB, RequiresAdminError on
+    Windows) no longer blocks startup — see cookies.py;
+  * model aliases live in a registry (models.py) and can be overridden or
+    extended through GEMINI_MODEL_ALIASES / GEMINI_CHAT_MODEL / GEMINI_IMAGE_MODEL,
+    and a raw 16-hex backend id is accepted anywhere a model is;
+  * gemini_models reports the alias → id mapping and the active cookie source.
 """
 
 import asyncio
@@ -22,6 +31,9 @@ from typing import Optional
 
 from mcp.server.fastmcp import FastMCP, Context
 
+from . import cookies as cookie_store
+from . import models as model_registry
+
 # ---------------------------------------------------------------------------
 # Logging (stderr only — stdout reserved for MCP stdio transport)
 # ---------------------------------------------------------------------------
@@ -33,7 +45,9 @@ logger.setLevel(logging.INFO)
 # Constants
 # ---------------------------------------------------------------------------
 IMAGES_DIR = Path.home() / "Pictures" / "gemini"
-DEFAULT_MODEL = "gemini-3.0-flash"
+# Default chat model alias. Resolved through the registry, so it can be changed
+# with GEMINI_CHAT_MODEL or overridden per call with model=<alias|16-hex id>.
+DEFAULT_MODEL = model_registry.default_chat_model()
 
 # Hard ceiling for a single image-generation call (seconds). The StreamGenerate
 # response via gemini_webapi is erratically slow (measured 22s..345s for the
@@ -245,56 +259,19 @@ def _remove_watermark(image_path: str, upscaled: bool = False) -> Optional[bool]
 
 
 # ---------------------------------------------------------------------------
-# Cookie resolution: env vars → browser-cookie3 → error
+# Cookie resolution: env → store → browser-cookie3 → Chrome DevTools
+# (see cookies.py for the full chain and the Windows locking caveat)
 # ---------------------------------------------------------------------------
 
 def _resolve_cookies() -> tuple[str, str]:
-    """Resolve Gemini auth cookies with clear priority chain.
+    """Resolve Gemini auth cookies through the fallback chain in ``cookies.py``.
 
-    1. Environment variables GEMINI_PSID / GEMINI_PSIDTS (explicit override).
-    2. Chrome browser cookies via browser-cookie3 (automatic).
-    3. RuntimeError with actionable instructions.
-
-    Returns (psid, psidts). psidts may be empty.
-    Cookie values are never logged.
+    Returns ``(psid, psidts)``; ``psidts`` may be empty. Cookie values are never
+    logged — only which source answered.
     """
-    # --- Priority 1: explicit env vars ---
-    psid = os.environ.get("GEMINI_PSID", "")
-    psidts = os.environ.get("GEMINI_PSIDTS", "")
-    if psid:
-        logger.info("Using Gemini cookies from environment variables")
-        return psid, psidts
-
-    # --- Priority 2: Chrome browser cookies ---
-    try:
-        import browser_cookie3
-
-        cookie_file = os.environ.get("CHROME_COOKIE_FILE") or None
-        cj = browser_cookie3.chrome(domain_name=".google.com", cookie_file=cookie_file)
-        for cookie in cj:
-            # domain_name is a substring filter: `.google.com.bd` etc. also match,
-            # and their session cookies are not valid for gemini.google.com.
-            if cookie.domain != ".google.com":
-                continue
-            if cookie.name == "__Secure-1PSID" and cookie.value:
-                psid = cookie.value
-            elif cookie.name == "__Secure-1PSIDTS" and cookie.value:
-                psidts = cookie.value
-        if psid:
-            logger.info("Using Gemini cookies from Chrome browser")
-            return psid, psidts
-        logger.warning("browser-cookie3: no __Secure-1PSID cookie found in Chrome")
-    except ImportError:
-        logger.warning("browser-cookie3 not installed — cannot read cookies from Chrome")
-    except Exception as exc:
-        logger.warning("browser-cookie3: failed to read Chrome cookies — %s", type(exc).__name__)
-
-    # --- Nothing worked ---
-    raise RuntimeError(
-        "Gemini cookies not found. Options:\n"
-        "  1. Log into gemini.google.com in Chrome and install browser-cookie3, or\n"
-        "  2. Set GEMINI_PSID (and optionally GEMINI_PSIDTS) environment variables."
-    )
+    psid, psidts, source = cookie_store.resolve()
+    logger.info("Using Gemini cookies from %s", source)
+    return psid, psidts
 
 
 def _make_gen_id() -> str:
@@ -337,6 +314,16 @@ def _get_client(ctx: Context):
 
 def _get_sessions(ctx: Context) -> dict:
     return ctx.request_context.lifespan_context["chat_sessions"]
+
+
+def _model_arg(name: str | None, *, kind: str = "chat") -> model_registry.ResolvedModel:
+    """Turn a model alias (or raw 16-hex id) into a resolved registry entry.
+
+    ``kind`` picks which default applies when ``name`` is None: ``chat`` uses
+    GEMINI_CHAT_MODEL / gemini-3.0-flash, ``image`` uses GEMINI_IMAGE_MODEL /
+    gemini-3.0-flash-thinking.
+    """
+    return model_registry.resolve(name, kind=kind)
 
 
 _image_mode = False
@@ -575,10 +562,17 @@ def _patch_client(gemini_client):
 def _handle_error(e: Exception) -> str:
     from gemini_webapi import AuthError, APIError, RequestTimeoutError
 
+    if isinstance(e, cookie_store.CookieError):
+        return f"Error: {e}"
+    if isinstance(e, model_registry.UnknownModelError):
+        return f"Error: {e}"
     if isinstance(e, AuthError):
         return (
-            "Error: Authentication failed. Cookies may have expired. "
-            "Re-login to gemini.google.com in Chrome, then call gemini_reset."
+            "Error: Authentication failed — the Gemini session is no longer valid. "
+            "Call gemini_reset first (it re-reads cookies from env → store → browser "
+            "→ Chrome DevTools). If that fails, log in again at gemini.google.com and "
+            "refresh the source; GEMINI_COOKIE_STORE_WRITE=1 rewrites the cookie store "
+            "from the next successful read."
         )
     if isinstance(e, RequestTimeoutError):
         return "Error: Request timed out. Try again or use a lighter model."
@@ -692,19 +686,24 @@ async def gemini_start_chat(
     have full context. Pass the returned session_id to gemini_chat.
 
     Args:
-        model: Model name for this session. Defaults to gemini-3.0-flash.
+        model: Model alias, e.g. 'gemini-3.0-flash' (default), 'gemini-3.0-pro',
+               'gemini-3.0-flash-thinking', an alias registered through
+               GEMINI_MODEL_ALIASES, or a raw 16-hex backend model id.
+               GEMINI_CHAT_MODEL overrides the default.
 
     Returns:
         JSON with session_id to use in subsequent gemini_chat calls.
     """
     try:
         client = _get_client(ctx)
-        chat = client.start_chat(model=model or DEFAULT_MODEL)
+        resolved = _model_arg(model)
+        chat = client.start_chat(model=resolved.as_library_model())
         session_id = str(uuid.uuid4())[:8]
         _get_sessions(ctx)[session_id] = chat
         return json.dumps({
             "session_id": session_id,
-            "model": model or DEFAULT_MODEL,
+            "model": resolved.alias,
+            "model_id": resolved.model_id,
             "message": f"Chat session started. Use session_id '{session_id}' in gemini_chat.",
         })
     except Exception as e:
@@ -731,8 +730,9 @@ async def gemini_chat(
 
     Args:
         prompt: The text prompt to send to Gemini.
-        model: Model name (e.g. 'gemini-3.0-flash', 'gemini-3.0-pro',
-               'gemini-3.0-flash-thinking'). Defaults to gemini-3.0-flash.
+        model: Model alias ('gemini-3.0-flash', 'gemini-3.0-pro',
+               'gemini-3.0-flash-thinking', an env-registered alias) or a raw
+               16-hex model id. Defaults to GEMINI_CHAT_MODEL or gemini-3.0-flash.
         session_id: Optional session ID from gemini_start_chat for
                     multi-turn conversation with context.
 
@@ -751,7 +751,7 @@ async def gemini_chat(
             response = await chat.send_message(prompt)
         else:
             response = await client.generate_content(
-                prompt, model=model or DEFAULT_MODEL
+                prompt, model=_model_arg(model).as_library_model()
             )
 
         text = response.text or "(empty response)"
@@ -794,8 +794,11 @@ async def gemini_generate_image(
     Args:
         prompt: Description of the image to generate, or editing instruction
                 (e.g. 'change the background to blue', 'make it a cartoon').
-        model: Model name. Defaults to gemini-3.0-flash-thinking
-               (Nano Banana 2, supports non-square aspect ratios).
+        model: Model alias or raw 16-hex id. Defaults to GEMINI_IMAGE_MODEL or
+               gemini-3.0-flash-thinking (Nano Banana 2, supports non-square
+               aspect ratios). Note: while generating an image the request
+               header is remapped to GEMINI_IMAGE_MODEL_ID unless
+               GEMINI_NO_REMAP=1.
         files: Optional list of file paths to images to edit/transform.
         conversation_id: Optional list of [cid, rid, rcid] from a previous
                          gemini_generate_image response to continue the conversation.
@@ -820,6 +823,7 @@ async def gemini_generate_image(
                 resolved_files.append(str(p))
 
         chat = None
+        resolved = _model_arg(model, kind="image")
         async with _image_lock:
             t = _stage("acquired image lock", t0)
             _image_mode = True
@@ -827,11 +831,11 @@ async def gemini_generate_image(
                 if conversation_id:
                     chat = client.start_chat(
                         metadata=conversation_id,
-                        model=model or "gemini-3.0-flash-thinking",
+                        model=resolved.as_library_model(),
                     )
                     gen_coro = chat.send_message(prompt, files=resolved_files or None)
                 else:
-                    kwargs = {"model": model or "gemini-3.0-flash-thinking"}
+                    kwargs = {"model": resolved.as_library_model()}
                     if resolved_files:
                         kwargs["files"] = resolved_files
                     gen_coro = client.generate_content(prompt, **kwargs)
@@ -975,7 +979,7 @@ async def gemini_upload_file(
 
         client = _get_client(ctx)
         response = await client.generate_content(
-            prompt, model=model or DEFAULT_MODEL, files=[str(p)]
+            prompt, model=_model_arg(model).as_library_model(), files=[str(p)]
         )
         return response.text or "(empty response)"
 
@@ -1017,7 +1021,7 @@ async def gemini_analyze_url(
         client = _get_client(ctx)
         full_prompt = f"{prompt}\n\n{url}"
         response = await client.generate_content(
-            full_prompt, model=model or DEFAULT_MODEL
+            full_prompt, model=_model_arg(model).as_library_model()
         )
         return response.text or "(empty response)"
     except Exception as e:
@@ -1062,3 +1066,47 @@ async def gemini_reset(ctx: Context) -> str:
 
     except Exception as e:
         return _handle_error(e)
+
+
+@mcp.tool(
+    name="gemini_models",
+    annotations={
+        "title": "List Gemini Models",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def gemini_models() -> str:
+    """List every known model alias, its backend id, and where it came from.
+
+    Useful when Google rotates model ids: register a new alias with
+    GEMINI_MODEL_ALIASES='{"my-alias": "<16-hex-id>"}' and it shows up here (and
+    can be passed to gemini_chat / gemini_generate_image) without a code change.
+    A bare 16-hex id is always accepted as a model argument.
+
+    Returns:
+        JSON with the alias catalogue, the active defaults, and the cookie
+        source that authenticated this session.
+    """
+    entries = model_registry.catalogue()
+    try:
+        _, _, cookie_source = cookie_store.resolve()
+    except Exception as exc:  # never fail the listing over a cookie problem
+        cookie_source = f"unavailable ({type(exc).__name__})"
+    payload = {
+        "models": entries,
+        "defaults": {
+            "chat": model_registry.default_chat_model(),
+            "image": model_registry.default_image_model(),
+            "image_header_id": os.environ.get("GEMINI_IMAGE_MODEL_ID", "56fdd199312815e2"),
+        },
+        "cookie_source": cookie_source,
+        "hint": (
+            "Aliases come from the built-in registry plus GEMINI_MODEL_ALIASES. "
+            "The Gemini web UI names (3.8 Flash, 4 Argon, ...) are not published "
+            "as ids — if you have one, pass it directly or register it."
+        ),
+    }
+    return json.dumps(payload, indent=2)
