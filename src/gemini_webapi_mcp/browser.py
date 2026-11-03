@@ -221,8 +221,21 @@ def _send_prompt(cdp: _Cdp, session: str, prompt: str) -> int:
     return before
 
 
-def _wait_answer(cdp: _Cdp, session: str, before: int, timeout: float) -> str:
-    """Poll until the new answer stops growing and no stop button is visible."""
+def _wait_answer(
+    cdp: _Cdp,
+    session: str,
+    before: int,
+    timeout: float,
+    wake=None,
+    wake_after: float = 12.0,
+) -> str:
+    """Poll until the new answer stops growing and no stop button is visible.
+
+    A background tab is throttled by Chrome: timers and rendering slow down, the
+    stream can look silent even though the server is done. `wake` is called once
+    when nothing has appeared after `wake_after` seconds, so the caller can bring
+    the tab to front as a fallback.
+    """
     probe = """
     () => {
       const nodes = document.querySelectorAll(%s);
@@ -233,9 +246,11 @@ def _wait_answer(cdp: _Cdp, session: str, before: int, timeout: float) -> str:
     }
     """ % json.dumps(ANSWER_SELECTOR)
 
-    deadline = time.time() + timeout
+    started = time.time()
+    deadline = started + timeout
     previous = None
     stable = 0
+    woke = False
     while time.time() < deadline:
         raw = cdp.js(session, f"({probe})()")
         state = raw if isinstance(raw, dict) else json.loads(raw)
@@ -247,10 +262,67 @@ def _wait_answer(cdp: _Cdp, session: str, before: int, timeout: float) -> str:
                 previous = state["last"]
             if not state["stop"] and stable >= 1:
                 return state["last"]
+        elif wake and not woke and (time.time() - started) > wake_after:
+            logger.info("browser transport: no output yet — bringing the tab to front")
+            woke = True
+            try:
+                wake()
+            except Exception as exc:
+                logger.warning("browser transport: could not activate the tab — %s", exc)
         time.sleep(0.7)
     if previous:
         return previous  # timed out but we did get text; better than nothing
     raise BrowserTransportError(f"no answer within {timeout:.0f}s")
+
+
+_STATE: dict = {"cdp": None, "session": None, "target": None}
+
+
+def _reset_state() -> None:
+    cdp = _STATE.get("cdp")
+    if cdp is not None:
+        try:
+            cdp.close()
+        except Exception:
+            pass
+    _STATE.update({"cdp": None, "session": None, "target": None})
+
+
+def _session():
+    """Reuse one CDP connection for the process lifetime.
+
+    Opening a fresh browser-level WebSocket per call makes Chrome (and any
+    policy in front of it) prompt repeatedly, and costs a handshake each time.
+    """
+    cdp = _STATE.get("cdp")
+    if cdp is not None:
+        try:
+            cdp.js(_STATE["session"], "1 + 1")
+            return cdp, _STATE["session"], _STATE["target"]
+        except Exception as exc:
+            logger.info("browser transport: reconnecting (%s)", type(exc).__name__)
+            _reset_state()
+
+    cdp = _Cdp(_devtools_url())
+    try:
+        target = _open_tab(cdp)
+        session = cdp.cmd("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
+        cdp.cmd("Runtime.enable", {}, session)
+        for method, params in (
+            ("Page.enable", {}),
+            ("Page.setWebLifecycleState", {"state": "active"}),
+            ("Emulation.setFocusEmulationEnabled", {"enabled": True}),
+        ):
+            try:
+                cdp.cmd(method, params, session)
+            except Exception as exc:
+                logger.debug("browser transport: %s unavailable (%s)", method, exc)
+    except Exception:
+        cdp.close()
+        raise
+
+    _STATE.update({"cdp": cdp, "session": session, "target": target})
+    return cdp, session, target
 
 
 def ask_sync(
@@ -260,19 +332,27 @@ def ask_sync(
     timeout: float = 300.0,
 ) -> str:
     """Send one prompt in the browser and return the answer text."""
-    cdp = _Cdp(_devtools_url())
     try:
-        target = _open_tab(cdp)
-        session = cdp.cmd("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
-        cdp.cmd("Runtime.enable", {}, session)
+        cdp, session, target = _session()
         if mode_label:
             logger.info("browser transport: %s", _select_mode(cdp, session, mode_label))
         if files:
             logger.info("browser transport: %s", _attach_files(cdp, session, files))
+
+        def wake() -> None:
+            cdp.cmd("Target.activateTarget", {"targetId": target})
+            cdp.cmd("Page.bringToFront", {}, session)
+
+        if (os.environ.get("GEMINI_BROWSER_FOCUS", "0") or "0").strip().lower() in ("1", "true", "yes"):
+            wake()
+
         before = _send_prompt(cdp, session, prompt)
-        return _wait_answer(cdp, session, before, timeout)
-    finally:
-        cdp.close()
+
+        return _wait_answer(cdp, session, before, timeout, wake=wake)
+    except Exception:
+        # A broken socket must not poison the next call.
+        _reset_state()
+        raise
 
 
 async def ask(

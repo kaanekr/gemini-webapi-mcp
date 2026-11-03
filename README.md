@@ -561,6 +561,18 @@ chrome.exe --remote-debugging-port=9222
 The transport reuses the open tab, picks the mode from the picker, attaches
 files through the composer input, submits, and reads the answer from the DOM.
 
+Because Chrome throttles background tabs, the transport keeps the tab "active"
+(`Page.setWebLifecycleState`) and emulates focus while reading, and brings the
+tab to the front once if nothing has appeared after ~12s. For unattended use,
+launching Chrome with the throttling disabled removes the guesswork:
+
+```bash
+chrome.exe --remote-debugging-port=9222 ^
+  --disable-background-timer-throttling ^
+  --disable-renderer-backgrounding ^
+  --disable-backgrounding-occluded-windows
+```
+
 ```bash
 GEMINI_TRANSPORT=browser
 ```
