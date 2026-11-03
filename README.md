@@ -496,6 +496,8 @@ If cookie auto-detection fails, set them manually:
 | `GEMINI_SKIP_2X` | `1` = keep the native (non-upscaled) image | `0` |
 | `GEMINI_WM_KEEP` | `1` = keep the Gemini watermark | `0` |
 | `GEMINI_GEN_TIMEOUT` | Hard cap for one call — image generation, file analysis, URL analysis (seconds) | `600` |
+| `GEMINI_WATCHDOG_TIMEOUT` | No-output stall threshold before the library retries (seconds) | `150` |
+| `GEMINI_INIT_TIMEOUT` | Client init timeout (seconds) | `300` |
 
 ## High Resolution (2x)
 

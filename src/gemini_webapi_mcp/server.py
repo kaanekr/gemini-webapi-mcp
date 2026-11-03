@@ -8,11 +8,11 @@ browser cookies (__Secure-1PSID and __Secure-1PSIDTS).
 Fork additions (kaanekr/gemini-webapi-mcp):
   * cookie resolution falls back to a JSON store and the Chrome DevTools
     protocol, so a running Chrome (locked cookie DB, RequiresAdminError on
-    Windows) no longer blocks startup — see cookies.py;
+    Windows) no longer blocks startup â€” see cookies.py;
   * model aliases live in a registry (models.py) and can be overridden or
     extended through GEMINI_MODEL_ALIASES / GEMINI_CHAT_MODEL / GEMINI_IMAGE_MODEL,
     and a raw 16-hex backend id is accepted anywhere a model is;
-  * gemini_models reports the alias → id mapping and the active cookie source.
+  * gemini_models reports the alias â†’ id mapping and the active cookie source.
 """
 
 import asyncio
@@ -35,7 +35,7 @@ from . import cookies as cookie_store
 from . import models as model_registry
 
 # ---------------------------------------------------------------------------
-# Logging (stderr only — stdout reserved for MCP stdio transport)
+# Logging (stderr only â€” stdout reserved for MCP stdio transport)
 # ---------------------------------------------------------------------------
 logger = logging.getLogger("gemini_mcp")
 logger.addHandler(logging.StreamHandler(sys.stderr))
@@ -51,25 +51,35 @@ DEFAULT_MODEL = model_registry.default_chat_model()
 
 # Hard ceiling for a single image-generation call (seconds). The StreamGenerate
 # response via gemini_webapi is erratically slow (measured 22s..345s for the
-# same prompt) while the same account generates in ~10s in the browser — the
+# same prompt) while the same account generates in ~10s in the browser â€” the
 # library's stall-watchdog + @running(retry=5) backoff can otherwise stretch a
 # call to minutes. We cap the whole call so it either returns or fails fast with
 # a clear message instead of hanging the MCP client. This is an upper bound;
 # fast generations still return as soon as Gemini responds.
 #
 # 600s is sized for the worst case: image-edit on a portrait reference with a
-# dense layout (text/logos/details). Such edits routinely stall 3–4× × 45s
+# dense layout (text/logos/details). Such edits routinely stall 3â€“4Ã— Ã— 45s
 # inside Nano Banana 2 before yielding the result (~210s wall-time observed).
 # Override with GEMINI_GEN_TIMEOUT.
 GEN_TIMEOUT = float(os.environ.get("GEMINI_GEN_TIMEOUT", "600"))
+
+# Stall watchdog: the library aborts a stream when no partial output arrives for
+# min(timeout, watchdog_timeout) and raises "Response stalled (zombie stream)"
+# (client.py:899-903). The historical 45s is too aggressive for work that is
+# silent before the first token: a 0.6MB PDF read took ~88s to first byte, and a
+# thinking model (pro/argon) can sit quiet for well over a minute â€” both were
+# killed mid-flight and surfaced as "zombie stream" or a timeout after retries.
+# Kept below INIT_TIMEOUT so real stalls still get retried.
+WATCHDOG_TIMEOUT = float(os.environ.get("GEMINI_WATCHDOG_TIMEOUT", "150"))
+INIT_TIMEOUT = float(os.environ.get("GEMINI_INIT_TIMEOUT", "300"))
 # Per-network-op timeout for image download in image.save() (seconds). Without
 # this the CDN fetch of the full-size (=s0, ~4.5MB) image can hang forever.
 DOWNLOAD_TIMEOUT = float(os.environ.get("GEMINI_DOWNLOAD_TIMEOUT", "60"))
 
 # Optional stage timing: set GEMINI_DEBUG_TIMING=1 to log per-stage wall-time.
 _DEBUG_TIMING = os.environ.get("GEMINI_DEBUG_TIMING") == "1"
-# c8o8Fe 2x-upscale RPC gives full-resolution downloads (~1792×2390 for portrait
-# vs ~896×1200 preview). Costs ~20s/image extra; disable with GEMINI_SKIP_2X=1.
+# c8o8Fe 2x-upscale RPC gives full-resolution downloads (~1792Ã—2390 for portrait
+# vs ~896Ã—1200 preview). Costs ~20s/image extra; disable with GEMINI_SKIP_2X=1.
 _SKIP_2X = os.environ.get("GEMINI_SKIP_2X", "0") != "0"
 # Skip the model-id remap + version bump in patched_request (which forces the
 # slow thinking-advanced model). Set to "1" to send the requested model as-is.
@@ -85,37 +95,37 @@ def _stage(label: str, t0: float) -> float:
     return now
 
 # ---------------------------------------------------------------------------
-# Watermark removal — self-calibrating reverse alpha-blend.
+# Watermark removal â€” self-calibrating reverse alpha-blend.
 #
-# Gemini stamps a small neutral-white "✦" sparkle near the bottom-right corner.
-# Its POSITION (margin from the corner), SIZE and OPACITY are NOT fixed — they
+# Gemini stamps a small neutral-white "âœ¦" sparkle near the bottom-right corner.
+# Its POSITION (margin from the corner), SIZE and OPACITY are NOT fixed â€” they
 # drift with the generation pipeline AND with the model's auto-chosen native
-# resolution. (txt2img landscape frames now carry the mark at margin≈96 /
-# alpha≈0.27 — the slot the edit pipeline uses — while older portrait frames sat
-# at margin≈32 / alpha≈0.50.) Hardcoding those constants stamped a dark ✦ ghost
+# resolution. (txt2img landscape frames now carry the mark at marginâ‰ˆ96 /
+# alphaâ‰ˆ0.27 â€” the slot the edit pipeline uses â€” while older portrait frames sat
+# at marginâ‰ˆ32 / alphaâ‰ˆ0.50.) Hardcoding those constants stamped a dark âœ¦ ghost
 # the moment Google moved the mark, so we no longer assume them.
 #
-# Instead we MEASURE everything from the frame, using the one invariant — the ✦
+# Instead we MEASURE everything from the frame, using the one invariant â€” the âœ¦
 # SHAPE (assets/wm_alpha_edit.npy, normalized to 0..1):
-#   1. localize — scan shape-correlation over position + scale in the corner;
-#   2. estimate — least-squares fit the per-image opacity A of the white overlay
-#      (L = bg + A·shape·(255-bg); background from a plane fit);
-#   3. subtract — reverse the alpha-blend with alpha_map = shape·A, premult =
-#      alpha_map·255  →  original = (watermarked - premult) / (1 - alpha_map);
-#   4. self-check — if the spot now holds an inverse ghost, revert.
+#   1. localize â€” scan shape-correlation over position + scale in the corner;
+#   2. estimate â€” least-squares fit the per-image opacity A of the white overlay
+#      (L = bg + AÂ·shapeÂ·(255-bg); background from a plane fit);
+#   3. subtract â€” reverse the alpha-blend with alpha_map = shapeÂ·A, premult =
+#      alpha_mapÂ·255  â†’  original = (watermarked - premult) / (1 - alpha_map);
+#   4. self-check â€” if the spot now holds an inverse ghost, revert.
 # Background-independent (clean on charcoal AND white) and resolution-independent
 # (any native aspect ratio). Honours GEMINI_WM_KEEP=1 as a diagnostics kill-switch.
 # ---------------------------------------------------------------------------
 _ASSETS_DIR = Path(__file__).resolve().parent / "assets"
-_WHITE = 255.0                        # the ✦ is a neutral-white overlay
-_ANCHOR_MARGINS = (96, 32)            # the two corner slots Gemini stamps the ✦ at
-_CORR_GHOST = -0.30                   # post-removal corr below this → revert (would ghost)
+_WHITE = 255.0                        # the âœ¦ is a neutral-white overlay
+_ANCHOR_MARGINS = (96, 32)            # the two corner slots Gemini stamps the âœ¦ at
+_CORR_GHOST = -0.30                   # post-removal corr below this â†’ revert (would ghost)
 _CORR_WORSE = 0.10                    # post-removal |corr| may not grow beyond this
-_wm_shape = None                      # cache: normalized ✦ shape (0..1)
+_wm_shape = None                      # cache: normalized âœ¦ shape (0..1)
 
 
 def _load_wm_shape():
-    """Normalized ✦ shape (0..1) — the single calibrated invariant."""
+    """Normalized âœ¦ shape (0..1) â€” the single calibrated invariant."""
     global _wm_shape
     import numpy as np
     if _wm_shape is None:
@@ -125,7 +135,7 @@ def _load_wm_shape():
 
 
 def _shape_at(logo):
-    """The ✦ shape bilinearly resized to `logo` px."""
+    """The âœ¦ shape bilinearly resized to `logo` px."""
     import numpy as np
     from PIL import Image
     shape = _load_wm_shape()
@@ -136,7 +146,7 @@ def _shape_at(logo):
 
 
 def _plane_bg(g, shape):
-    """Least-squares background plane fit over pixels outside the ✦ (shape≈0)."""
+    """Least-squares background plane fit over pixels outside the âœ¦ (shapeâ‰ˆ0)."""
     import numpy as np
     m = shape < 0.06
     ys, xs = np.mgrid[0:g.shape[0], 0:g.shape[1]]
@@ -146,7 +156,7 @@ def _plane_bg(g, shape):
 
 
 def _star_corr(box, shape):
-    """Correlation of background-subtracted luminance with the ✦ shape.
+    """Correlation of background-subtracted luminance with the âœ¦ shape.
 
     ~+1 = bright sparkle present, ~0 = clean background, strongly negative = a
     dark ghost (e.g. over-subtraction). Background-robust via a plane fit.
@@ -170,9 +180,9 @@ def _reverse_at(arr, x0, y0, logo, alpha, premult):
 
 
 def _estimate_alpha(arr, x0, y0, logo):
-    """Least-squares per-image opacity A of the white ✦ overlay, from the frame.
+    """Least-squares per-image opacity A of the white âœ¦ overlay, from the frame.
 
-    Model: L = bg + A·shape·(255-bg)  ⇒  A = <k, L-bg> / <k, k>, k = shape·(255-bg).
+    Model: L = bg + AÂ·shapeÂ·(255-bg)  â‡’  A = <k, L-bg> / <k, k>, k = shapeÂ·(255-bg).
     Fits over all star pixels (shape>0) so partial-coverage edges constrain A too.
     """
     import numpy as np
@@ -189,16 +199,16 @@ def _estimate_alpha(arr, x0, y0, logo):
 
 
 def _remove_watermark(image_path: str, upscaled: bool = False) -> Optional[bool]:
-    """Remove the Gemini ✦ from image_path in place by reverse alpha-blend.
+    """Remove the Gemini âœ¦ from image_path in place by reverse alpha-blend.
 
     The mark is stamped at one of two fixed corner anchors (margin 96 or 32 from
-    the bottom-right) — absolute offsets that don't depend on resolution. We
+    the bottom-right) â€” absolute offsets that don't depend on resolution. We
     process BOTH anchors deterministically rather than detecting the mark by
-    correlation: a weak ✦ on a bright/textured background (e.g. snow) has a tiny
+    correlation: a weak âœ¦ on a bright/textured background (e.g. snow) has a tiny
     correlation that no threshold can separate from false matches, but its
     per-image opacity still measures correctly. On the empty anchor the fitted
-    opacity is ≈0, so the subtraction is a near no-op. A self-check reverts any
-    anchor whose removal would ghost (dark inverse) or otherwise grow |corr| —
+    opacity is â‰ˆ0, so the subtraction is a near no-op. A self-check reverts any
+    anchor whose removal would ghost (dark inverse) or otherwise grow |corr| â€”
     so subtracting at an empty/textured anchor can never make things worse.
 
     upscaled doubles the anchors/logo for 2x frames. Returns True if anything was
@@ -210,7 +220,7 @@ def _remove_watermark(image_path: str, upscaled: bool = False) -> Optional[bool]
         import numpy as np
         from PIL import Image
     except Exception as exc:
-        logger.warning("numpy/PIL unavailable — watermark NOT removed: %s", exc)
+        logger.warning("numpy/PIL unavailable â€” watermark NOT removed: %s", exc)
         return None
     try:
         img = Image.open(image_path).convert("RGB")
@@ -234,7 +244,7 @@ def _remove_watermark(image_path: str, upscaled: bool = False) -> Optional[bool]
                 continue
             A = _estimate_alpha(arr, x0, y0, logo)
             if A is None or A <= 0.0:
-                continue                          # no overlay here (fit opacity ≈0)
+                continue                          # no overlay here (fit opacity â‰ˆ0)
             before_corr = _star_corr(box, sh)
             before = arr.copy()
             alpha = sh * A
@@ -242,12 +252,12 @@ def _remove_watermark(image_path: str, upscaled: bool = False) -> Optional[bool]
             _reverse_at(arr, x0, y0, logo, alpha, premult)
             after = _star_corr(arr[y0:y0 + logo, x0:x0 + logo], sh)
             if after < _CORR_GHOST or abs(after) > abs(before_corr) + _CORR_WORSE:
-                arr[:] = before                   # would ghost/worsen — revert this anchor
-                logger.info("✦ anchor m%d reverted (corr %.2f→%.2f): %s",
+                arr[:] = before                   # would ghost/worsen â€” revert this anchor
+                logger.info("âœ¦ anchor m%d reverted (corr %.2fâ†’%.2f): %s",
                             margin, before_corr, after, image_path)
                 continue
             removed = True
-            logger.info("✦ removed at m%d (logo %d A %.2f, corr %.2f→%.2f): %s",
+            logger.info("âœ¦ removed at m%d (logo %d A %.2f, corr %.2fâ†’%.2f): %s",
                         margin, logo, A, before_corr, after, image_path)
         if removed:
             Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8)).save(image_path)
@@ -259,7 +269,7 @@ def _remove_watermark(image_path: str, upscaled: bool = False) -> Optional[bool]
 
 
 # ---------------------------------------------------------------------------
-# Cookie resolution: env → store → browser-cookie3 → Chrome DevTools
+# Cookie resolution: env â†’ store â†’ browser-cookie3 â†’ Chrome DevTools
 # (see cookies.py for the full chain and the Windows locking caveat)
 # ---------------------------------------------------------------------------
 
@@ -267,7 +277,7 @@ def _resolve_cookies() -> tuple[str, str]:
     """Resolve Gemini auth cookies through the fallback chain in ``cookies.py``.
 
     Returns ``(psid, psidts)``; ``psidts`` may be empty. Cookie values are never
-    logged — only which source answered.
+    logged â€” only which source answered.
     """
     psid, psidts, source = cookie_store.resolve()
     logger.info("Using Gemini cookies from %s", source)
@@ -294,7 +304,7 @@ async def app_lifespan(server):
     client = GeminiClient(secure_1psid=psid, secure_1psidts=psidts or None, account_index=account_index)
     if account_index:
         logger.info("Using Google account index: %d", account_index)
-    await client.init(timeout=300, watchdog_timeout=45, auto_close=False, auto_refresh=True)
+    await client.init(timeout=INIT_TIMEOUT, watchdog_timeout=WATCHDOG_TIMEOUT, auto_close=False, auto_refresh=True)
     _patch_client(client)
 
     yield {"gemini_client": client, "chat_sessions": {}}
@@ -348,7 +358,7 @@ def _patch_client(gemini_client):
     # 20s..345s. The browser uses "56fdd199312815e2" (flash-advanced) which
     # returns in ~10s. Override via GEMINI_IMAGE_MODEL_ID if Google rotates it.
     _IMAGE_MODEL_ID = os.environ.get("GEMINI_IMAGE_MODEL_ID", "56fdd199312815e2")
-    # Capability flags array — the browser sends [4,5,6,8] (we used to send [4]).
+    # Capability flags array â€” the browser sends [4,5,6,8] (we used to send [4]).
     _IMAGE_MODEL_CAPS = "[4,5,6,8]"
 
     # Browser-compatible body params (indices in inner_req_list), captured from a
@@ -379,7 +389,7 @@ def _patch_client(gemini_client):
         if method == "POST" and "StreamGenerate" in str(url) and _image_mode:
             headers = kwargs.get("headers") or {}
 
-            # Per-request UUID — the browser uses an UPPERCASE uuid, embedded in
+            # Per-request UUID â€” the browser uses an UPPERCASE uuid, embedded in
             # both jspb headers AND inner[59], all three must match.
             req_uuid = str(uuid.uuid4()).upper()
 
@@ -568,23 +578,23 @@ def _handle_error(e: Exception) -> str:
         return f"Error: {e}"
     if isinstance(e, AuthError):
         return (
-            "Error: Authentication failed — the Gemini session is no longer valid. "
-            "Call gemini_reset first (it re-reads cookies from env → store → browser "
-            "→ Chrome DevTools). If that fails, log in again at gemini.google.com and "
+            "Error: Authentication failed â€” the Gemini session is no longer valid. "
+            "Call gemini_reset first (it re-reads cookies from env â†’ store â†’ browser "
+            "â†’ Chrome DevTools). If that fails, log in again at gemini.google.com and "
             "refresh the source; GEMINI_COOKIE_STORE_WRITE=1 rewrites the cookie store "
             "from the next successful read."
         )
     if isinstance(e, RequestTimeoutError):
         return "Error: Request timed out. Try again or use a lighter model."
     if isinstance(e, APIError):
-        return f"Error: Gemini API error — {e}"
-    return f"Error: {type(e).__name__} — {e}"
+        return f"Error: Gemini API error â€” {e}"
+    return f"Error: {type(e).__name__} â€” {e}"
 
 
 def _timeout_message(kind: str) -> str:
     """Message for a call that hit GEMINI_GEN_TIMEOUT (stalled, not failed)."""
     return (
-        f"Error: Gemini did not answer within {GEN_TIMEOUT:.0f}s — the request stalled "
+        f"Error: Gemini did not answer within {GEN_TIMEOUT:.0f}s â€” the request stalled "
         f"({kind}). On this account that is usually server-side throttling, not the input: "
         "wait a few minutes and retry instead of re-sending in a loop. "
         "GEMINI_GEN_TIMEOUT overrides the cap."
@@ -829,7 +839,7 @@ async def gemini_generate_image(
             for f in files:
                 p = Path(f).expanduser().resolve()
                 if not p.exists():
-                    return f"Error: File not found — {p}"
+                    return f"Error: File not found â€” {p}"
                 resolved_files.append(str(p))
 
         chat = None
@@ -853,7 +863,7 @@ async def gemini_generate_image(
                 # minutes when Gemini throttles the account. Fail fast instead.
                 response = await asyncio.wait_for(gen_coro, timeout=GEN_TIMEOUT)
             except asyncio.TimeoutError:
-                logger.warning("generate_content exceeded %.0fs cap — aborting", GEN_TIMEOUT)
+                logger.warning("generate_content exceeded %.0fs cap â€” aborting", GEN_TIMEOUT)
                 return (
                     f"Error: Gemini did not return an image within {GEN_TIMEOUT:.0f}s "
                     "via the library (the browser is usually faster). Try again."
@@ -985,7 +995,7 @@ async def gemini_upload_file(
     try:
         p = Path(file_path).expanduser().resolve()
         if not p.exists():
-            return f"Error: File not found — {p}"
+            return f"Error: File not found â€” {p}"
 
         client = _get_client(ctx)
         try:
@@ -1020,7 +1030,7 @@ async def gemini_analyze_url(
     prompt: str = "Summarize this content.",
     model: Optional[str] = None,
 ) -> str:
-    """Analyze a URL — YouTube videos, webpages, articles, etc.
+    """Analyze a URL â€” YouTube videos, webpages, articles, etc.
 
     Gemini can watch YouTube videos and read webpages, then answer
     questions about their content.
@@ -1082,7 +1092,7 @@ async def gemini_reset(ctx: Context) -> str:
         new_client = GeminiClient(
             secure_1psid=psid, secure_1psidts=psidts or None, account_index=account_index
         )
-        await new_client.init(timeout=300, watchdog_timeout=45, auto_close=False, auto_refresh=True)
+        await new_client.init(timeout=INIT_TIMEOUT, watchdog_timeout=WATCHDOG_TIMEOUT, auto_close=False, auto_refresh=True)
         _patch_client(new_client)
 
         ctx.request_context.lifespan_context["gemini_client"] = new_client
@@ -1130,7 +1140,7 @@ async def gemini_models() -> str:
         "hint": (
             "Aliases come from the built-in registry plus GEMINI_MODEL_ALIASES. "
             "The Gemini web UI names (3.8 Flash, 4 Argon, ...) are not published "
-            "as ids — if you have one, pass it directly or register it."
+            "as ids â€” if you have one, pass it directly or register it."
         ),
     }
     return json.dumps(payload, indent=2)
