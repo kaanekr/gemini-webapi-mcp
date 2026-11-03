@@ -563,8 +563,19 @@ files through the composer input, submits, and reads the answer from the DOM.
 
 Because Chrome throttles background tabs, the transport keeps the tab "active"
 (`Page.setWebLifecycleState`) and emulates focus while reading, and brings the
-tab to the front once if nothing has appeared after ~12s. For unattended use,
-launching Chrome with the throttling disabled removes the guesswork:
+tab to the front once if nothing has appeared after ~12s. `GEMINI_BROWSER_FOCUS=1`
+brings it to the front before every send instead.
+
+> **"Allow remote debugging?" prompt.** Chrome 136+ asks this the first time a
+> client connects to the DevTools endpoint, and the handshake stays pending
+> until it is answered (a dismissed dialog surfaces as `10053` / WebSocket
+> timeout). This transport keeps **one connection per process**, so the prompt
+> appears once per Chrome session — answer *Allow* — not once per tool call.
+> To never see it, give automation its own profile and sign in there once:
+> `chrome.exe --user-data-dir=C:\chrome-gemini --remote-debugging-port=9222`.
+
+For unattended use, launching Chrome with background throttling disabled removes
+the guesswork:
 
 ```bash
 chrome.exe --remote-debugging-port=9222 ^

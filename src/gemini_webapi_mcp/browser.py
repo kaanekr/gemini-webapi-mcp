@@ -171,21 +171,45 @@ def _select_mode(cdp: _Cdp, session: str, label: str) -> str:
     return cdp.js(session, script, await_promise=True)
 
 
+FIND_FILE_INPUT_JS = """
+(() => {
+  const walk = (root) => {
+    const direct = root.querySelector ? root.querySelector('input[type=file]') : null;
+    if (direct) return direct;
+    for (const el of root.querySelectorAll('*')) {
+      if (el.shadowRoot) {
+        const found = walk(el.shadowRoot);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+  return walk(document);
+})()
+"""
+
+
 def _attach_files(cdp: _Cdp, session: str, files: list[str]) -> str:
-    """Push files into the hidden composer input."""
-    cdp.cmd("DOM.enable", {}, session)
-    doc = cdp.cmd("DOM.getDocument", {"depth": -1}, session)
-    root = doc.get("root", {}).get("nodeId")
-    if not root:
-        raise BrowserTransportError("could not read the page DOM")
-    node = cdp.cmd(
-        "DOM.querySelector", {"nodeId": root, "selector": "input[type=file]"}, session
-    ).get("nodeId")
-    if not node:
-        raise BrowserTransportError("composer file input not found (UI changed?)")
-    cdp.cmd("DOM.setFileInputFiles", {"files": files, "nodeId": node}, session)
+    """Push files into the composer input, waiting for the composer to render."""
+    object_id = None
+    for _ in range(24):
+        out = cdp.cmd(
+            "Runtime.evaluate",
+            {"expression": FIND_FILE_INPUT_JS, "returnByValue": False, "userGesture": True},
+            session,
+        )
+        object_id = out.get("result", {}).get("objectId")
+        if object_id:
+            break
+        time.sleep(0.5)
+    if not object_id:
+        raise BrowserTransportError(
+            "composer file input not found — the tab is not on a loaded Gemini chat "
+            "(open gemini.google.com/app, or retry once the page has rendered)"
+        )
+    cdp.cmd("DOM.setFileInputFiles", {"files": files, "objectId": object_id}, session)
     # Give the app time to upload and render the attachment chips.
-    time.sleep(min(8.0, 2.0 + len(files)))
+    time.sleep(min(10.0, 3.0 + len(files) * 2))
     return "attached"
 
 
